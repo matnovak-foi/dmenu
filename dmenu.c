@@ -24,9 +24,13 @@
                              * MAX(0, MIN((y)+(h),(r).y_org+(r).height) - MAX((y),(r).y_org)))
 #define LENGTH(X)             (sizeof X / sizeof X[0])
 #define TEXTW(X)              (drw_fontset_getwidth(drw, (X)) + lrpad)
+#define NUMBERSMAXDIGITS      100
+#define NUMBERSBUFSIZE        (NUMBERSMAXDIGITS * 2) + 1
 
 /* enums */
-enum { SchemeNorm, SchemeSel, SchemeOut, SchemeLast }; /* color schemes */
+enum { SchemeNorm, SchemeSel, SchemeNormHighlight, SchemeSelHighlight,
+       SchemeOut, SchemeLast }; /* color schemes */
+
 
 struct item {
 	char *text;
@@ -34,6 +38,7 @@ struct item {
 	int out;
 };
 
+static char numbers[NUMBERSBUFSIZE] = "";
 static char text[BUFSIZ] = "";
 static char *embed;
 static int bh, mw, mh;
@@ -113,9 +118,49 @@ cistrstr(const char *s, const char *sub)
 	return NULL;
 }
 
+static void
+drawhighlights(struct item *item, int x, int y, int maxw)
+{
+	int i, indent;
+	char *highlight;
+	char c;
+
+	if (!(strlen(item->text) && strlen(text)))
+		return;
+
+	drw_setscheme(drw, scheme[item == sel
+	                   ? SchemeSelHighlight
+	                   : SchemeNormHighlight]);
+	for (i = 0, highlight = item->text; *highlight && text[i];) {
+		if (*highlight == text[i]) {
+			/* get indentation */
+			c = *highlight;
+			*highlight = '\0';
+			indent = TEXTW(item->text);
+			*highlight = c;
+
+			/* highlight character */
+			c = highlight[1];
+			highlight[1] = '\0';
+			drw_text(
+				drw,
+				x + indent - (lrpad / 2),
+				y,
+				MIN(maxw - indent, TEXTW(highlight) - lrpad),
+				bh, 0, highlight, 0
+			);
+			highlight[1] = c;
+			i++;
+		}
+		highlight++;
+	}
+}
+
+
 static int
 drawitem(struct item *item, int x, int y, int w)
 {
+	int r;
 	if (item == sel)
 		drw_setscheme(drw, scheme[SchemeSel]);
 	else if (item->out)
@@ -123,7 +168,24 @@ drawitem(struct item *item, int x, int y, int w)
 	else
 		drw_setscheme(drw, scheme[SchemeNorm]);
 
-	return drw_text(drw, x, y, w, bh, lrpad / 2, item->text, 0);
+	r = drw_text(drw, x, y, w, bh, lrpad / 2, item->text, 0);
+	drawhighlights(item, x, y, w);
+	return r;
+}
+
+static void
+recalculatenumbers()
+{
+	unsigned int numer = 0, denom = 0;
+	struct item *item;
+	if (matchend) {
+		numer++;
+		for (item = matchend; item && item->left; item = item->left)
+			numer++;
+	}
+	for (item = items; item && item->text; item++)
+		denom++;
+	snprintf(numbers, NUMBERSBUFSIZE, "%d/%d", numer, denom);
 }
 
 static void
@@ -131,7 +193,7 @@ drawmenu(void)
 {
 	unsigned int curpos;
 	struct item *item;
-	int x = 0, y = 0, w;
+	int x = 0, y = 0, fh = drw->fonts->h, w;
 
 	drw_setscheme(drw, scheme[SchemeNorm]);
 	drw_rect(drw, 0, 0, mw, mh, 1, 1);
@@ -148,9 +210,10 @@ drawmenu(void)
 	curpos = TEXTW(text) - TEXTW(&text[cursor]);
 	if ((curpos += lrpad / 2 - 1) < w) {
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		drw_rect(drw, x + curpos, 2, 2, bh - 4, 1, 0);
+		drw_rect(drw, x + curpos, 2 + (bh-fh)/2, 2, fh - 4, 1, 0);
 	}
 
+	recalculatenumbers();
 	if (lines > 0) {
 		/* draw vertical list */
 		for (item = curr; item != next; item = item->right)
@@ -165,13 +228,15 @@ drawmenu(void)
 		}
 		x += w;
 		for (item = curr; item != next; item = item->right)
-			x = drawitem(item, x, 0, MIN(TEXTW(item->text), mw - x - TEXTW(">")));
+			x = drawitem(item, x, 0, MIN(TEXTW(item->text), mw - x - TEXTW(">") - TEXTW(numbers)));
 		if (next) {
 			w = TEXTW(">");
 			drw_setscheme(drw, scheme[SchemeNorm]);
-			drw_text(drw, mw - w, 0, w, bh, lrpad / 2, ">", 0);
+			drw_text(drw, mw - w - TEXTW(numbers), 0, w, bh, lrpad / 2, ">", 0);
 		}
 	}
+	drw_setscheme(drw, scheme[SchemeNorm]);
+	drw_text(drw, mw - TEXTW(numbers), 0, TEXTW(numbers), bh, lrpad / 2, numbers, 0);
 	drw_map(drw, win, 0, 0, mw, mh);
 }
 
@@ -609,6 +674,7 @@ setup(void)
 
 	/* calculate menu geometry */
 	bh = drw->fonts->h + 2;
+	bh = MAX(bh,lineheight);	/* make a menu line AT LEAST 'lineheight' tall */
 	lines = MAX(lines, 0);
 	mh = (lines + 1) * bh;
 #ifdef XINERAMA
@@ -690,7 +756,9 @@ static void
 usage(void)
 {
 	fputs("usage: dmenu [-bfiv] [-l lines] [-p prompt] [-fn font] [-m monitor]\n"
-	      "             [-nb color] [-nf color] [-sb color] [-sf color] [-w windowid]\n", stderr);
+		  "				[-h height]\n"
+	      "             [-nb color] [-nf color] [-sb color] [-sf color]\n"
+	      "             [-nhb color] [-nhf color] [-shb color] [-shf color] [-w windowid]\n", stderr);
 	exit(1);
 }
 
@@ -723,6 +791,10 @@ main(int argc, char *argv[])
 			prompt = argv[++i];
 		else if (!strcmp(argv[i], "-fn"))  /* font or font set */
 			fonts[0] = argv[++i];
+		else if(!strcmp(argv[i], "-h")) { /* minimum height of one menu line */
+			lineheight = atoi(argv[++i]);
+			lineheight = MAX(lineheight,8); /* reasonable default in case of value too small/negative */
+		}
 		else if (!strcmp(argv[i], "-nb"))  /* normal background color */
 			colors[SchemeNorm][ColBg] = argv[++i];
 		else if (!strcmp(argv[i], "-nf"))  /* normal foreground color */
@@ -731,6 +803,14 @@ main(int argc, char *argv[])
 			colors[SchemeSel][ColBg] = argv[++i];
 		else if (!strcmp(argv[i], "-sf"))  /* selected foreground color */
 			colors[SchemeSel][ColFg] = argv[++i];
+		else if (!strcmp(argv[i], "-nhb")) /* normal hi background color */
+			colors[SchemeNormHighlight][ColBg] = argv[++i];
+		else if (!strcmp(argv[i], "-nhf")) /* normal hi foreground color */
+			colors[SchemeNormHighlight][ColFg] = argv[++i];
+		else if (!strcmp(argv[i], "-shb")) /* selected hi background color */
+			colors[SchemeSelHighlight][ColBg] = argv[++i];
+		else if (!strcmp(argv[i], "-shf")) /* selected hi foreground color */
+			colors[SchemeSelHighlight][ColFg] = argv[++i];
 		else if (!strcmp(argv[i], "-w"))   /* embedding window id */
 			embed = argv[++i];
 		else
